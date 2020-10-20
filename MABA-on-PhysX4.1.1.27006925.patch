@@ -1,0 +1,1070 @@
+From fdb89ec8e5327c3b6ad0b547ef63b6ff0793cb4f Mon Sep 17 00:00:00 2001
+From: Zhiqi Yin <zhiqiy@sfu.ca>
+Date: Sun, 18 Oct 2020 18:47:11 -0700
+Subject: [PATCH] MABA patch
+
+---
+ .gitignore                                    |   4 +
+ physx/buildtools/presets/public/linux.xml     |   5 +-
+ .../include/PxArticulationReducedCoordinate.h |  17 +-
+ physx/include/PxConfig.h                      |  34 +++
+ .../include/DyFeatherstoneArticulation.h      |  15 +-
+ .../include/DyVArticulation.h                 |  10 +-
+ .../src/DyFeatherstoneForwardDynamic.cpp      | 142 +++++--------
+ .../src/DyFeatherstoneInverseDynamic.cpp      | 200 +++++++++++++++---
+ .../src/NpArticulationReducedCoordinate.cpp   |  26 ++-
+ .../src/NpArticulationReducedCoordinate.h     |  10 +-
+ .../include/ScArticulationCore.h              |  10 +-
+ .../src/ScArticulationCore.cpp                |  22 +-
+ .../src/ScArticulationSim.cpp                 |  29 +--
+ .../src/ScArticulationSim.h                   |  10 +-
+ 14 files changed, 362 insertions(+), 172 deletions(-)
+ create mode 100644 .gitignore
+ create mode 100644 physx/include/PxConfig.h
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 00000000..69f51e1e
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,4 @@
++bin/
++compiler/
++install/
++.vscode/
+diff --git a/physx/buildtools/presets/public/linux.xml b/physx/buildtools/presets/public/linux.xml
+index 8c5160c7..0b92cea5 100644
+--- a/physx/buildtools/presets/public/linux.xml
++++ b/physx/buildtools/presets/public/linux.xml
+@@ -7,6 +7,7 @@
+     <cmakeSwitch name="PX_GENERATE_STATIC_LIBRARIES" value="True" comment="Generate static libs" />    
+   </CMakeSwitches>
+   <CMakeParams>
+-    <cmakeParam name="CMAKE_INSTALL_PREFIX" value="install/linux/PhysX" comment="Install path relative to PhysX SDK root" />
++      <cmakeParam name="CMAKE_LIBRARY_ARCHITECTURE" value="x86_64-linux-gnu" comment="library architecture" /> 
++      <cmakeParam name="CMAKE_INSTALL_PREFIX" value="install/linux/PhysX" comment="Install path relative to PhysX SDK root" />
+   </CMakeParams>
+-</preset>
+\ No newline at end of file
++</preset>
+diff --git a/physx/include/PxArticulationReducedCoordinate.h b/physx/include/PxArticulationReducedCoordinate.h
+index a3acd8e5..b6e1b7e8 100644
+--- a/physx/include/PxArticulationReducedCoordinate.h
++++ b/physx/include/PxArticulationReducedCoordinate.h
+@@ -255,7 +255,7 @@ namespace physx
+ 		
+ 		@see commonInit
+ 		*/
+-		virtual		void					computeGeneralizedGravityForce(PxArticulationCache& cache) const = 0;
++		virtual		void					computeGeneralizedGravityForce(PxArticulationCache& cache, bool forceRNEA = false) const = 0;
+ 
+ 		/**
+ 		\brief determine coriolise and centrifugal force. External force, gravity and joint acceleration
+@@ -265,7 +265,7 @@ namespace physx
+ 		
+ 		@see commonInit
+ 		*/
+-		virtual		void					computeCoriolisAndCentrifugalForce(PxArticulationCache& cache) const = 0;
++		virtual		void					computeCoriolisAndCentrifugalForce(PxArticulationCache& cache, bool forceRNEA = false) const = 0;
+ 
+ 		/**
+ 		\brief determine joint force change caused by external force. Gravity, joint acceleration and joint velocity
+@@ -275,7 +275,16 @@ namespace physx
+ 
+ 		@see commonInit
+ 		*/
+-		virtual		void					computeGeneralizedExternalForce(PxArticulationCache& cache) const = 0;
++		virtual		void					computeGeneralizedExternalForce(PxArticulationCache& cache, bool forceRNEA = false) const = 0;
++
++		/**
++		\brief determine joint force change caused by everything including external force, gravity, coriolis...
++
++		\param[in] cache data
++
++		@see commonInit
++		*/
++		virtual		void					computeGeneralizedBiasForce(PxArticulationCache& cache, bool forceRNEA = false) const = 0;
+ 
+ 		/**
+ 		\brief determine the joint acceleration for each joint
+@@ -333,7 +342,7 @@ namespace physx
+ 
+ 		@see commonInit
+ 		*/
+-		virtual		void					computeGeneralizedMassMatrix(PxArticulationCache& cache) const = 0;
++		virtual		void					computeGeneralizedMassMatrix(PxArticulationCache& cache, bool makeDense) const = 0;
+ 	
+ 		/**
+ 		\brief add loop joint to the articulation system for inverse dynamic
+diff --git a/physx/include/PxConfig.h b/physx/include/PxConfig.h
+new file mode 100644
+index 00000000..820189ca
+--- /dev/null
++++ b/physx/include/PxConfig.h
+@@ -0,0 +1,34 @@
++//
++// Redistribution and use in source and binary forms, with or without
++// modification, are permitted provided that the following conditions
++// are met:
++//  * Redistributions of source code must retain the above copyright
++//    notice, this list of conditions and the following disclaimer.
++//  * Redistributions in binary form must reproduce the above copyright
++//    notice, this list of conditions and the following disclaimer in the
++//    documentation and/or other materials provided with the distribution.
++//  * Neither the name of NVIDIA CORPORATION nor the names of its
++//    contributors may be used to endorse or promote products derived
++//    from this software without specific prior written permission.
++//
++// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
++// EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++// PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
++// CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
++// EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
++// PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
++// PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
++// OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++//
++// Copyright (c) 2008-2019 NVIDIA Corporation. All rights reserved.
++
++
++#ifndef PX_CONFIG
++#define PX_CONFIG
++
++
++
++#endif  // PX_CONFIG
+diff --git a/physx/source/lowleveldynamics/include/DyFeatherstoneArticulation.h b/physx/source/lowleveldynamics/include/DyFeatherstoneArticulation.h
+index c8b48d5b..22759aca 100644
+--- a/physx/source/lowleveldynamics/include/DyFeatherstoneArticulation.h
++++ b/physx/source/lowleveldynamics/include/DyFeatherstoneArticulation.h
+@@ -477,13 +477,16 @@ namespace Dy
+ 		virtual void		initializeCommonData();
+ 
+ 		//gravity as input, joint force as output
+-		virtual void		getGeneralizedGravityForce(const PxVec3& gravity, PxArticulationCache& cache);
++		virtual void		getGeneralizedGravityForce(const PxVec3& gravity, PxArticulationCache& cache, bool forceRNEA);
+ 
+ 		//joint velocity as input, generalised force(coriolis and centrigugal force) as output
+-		virtual void		getCoriolisAndCentrifugalForce(PxArticulationCache& cache);
++		virtual void		getCoriolisAndCentrifugalForce(PxArticulationCache& cache, bool forceRNEA);
+ 
+ 		//external force as input, joint force as output
+-		virtual void		getGeneralizedExternalForce(PxArticulationCache& /*cache*/);
++		virtual void		getGeneralizedExternalForce(PxArticulationCache& /*cache*/, bool forceRNEA);
++
++		// taking into account all of gravity, coriolis, external
++		virtual void		getGeneralizedBiasForce(const PxVec3& gravity, PxArticulationCache& /*cache*/, bool forceRNEA);
+ 
+ 		//joint force as input, joint acceleration as output
+ 		virtual void		getJointAcceleration(const PxVec3& gravity, PxArticulationCache& cache);
+@@ -505,7 +508,7 @@ namespace Dy
+ 
+ 		virtual void		getGeneralizedMassMatrix(PxArticulationCache& cache);
+ 
+-		virtual void		getGeneralizedMassMatrixCRB(PxArticulationCache& cache);
++		virtual void		getGeneralizedMassMatrixCRB(PxArticulationCache& cache, bool makeDense);
+ 
+ 		virtual bool		storeStaticConstraint(const PxSolverConstraintDesc& desc);
+ 
+@@ -723,7 +726,7 @@ namespace Dy
+ 			ScratchData& scratchData, Cm::SpatialVectorF* tZ, Cm::SpatialVectorF* tDeltaV);
+ 
+ 		void computeIs(ArticulationLinkData& linkDatum, ArticulationJointCoreData& jointDatum, const PxU32 linkID);
+-		static SpatialMatrix computePropagateSpatialInertia(const PxU8 jointType, ArticulationJointCoreData& jointDatum,
++		static SpatialMatrix computePropagateSpatialInertia(PxU32 linkId, const PxU8 jointType, ArticulationJointCoreData& jointDatum,
+ 			const SpatialMatrix& articulatedInertia, const Cm::SpatialVectorF* linkIs, InvStIs& invStIs, IsInvD& isInvD, 
+ 			const SpatialSubspaceMatrix& motionMatrix);
+ 
+@@ -841,7 +844,7 @@ namespace Dy
+ 
+ 		void calculateHFixBase(PxArticulationCache& cache);
+ 
+-		void calculateHFloatingBase(PxArticulationCache& cache);
++		void calculateHFloatingBase(PxArticulationCache& cache, bool makeDense);
+ 
+ 		//joint limits
+ 		void enforcePrismaticLimits(PxReal* jPosition, ArticulationJointCore* joint);
+diff --git a/physx/source/lowleveldynamics/include/DyVArticulation.h b/physx/source/lowleveldynamics/include/DyVArticulation.h
+index cd351204..0006ade5 100644
+--- a/physx/source/lowleveldynamics/include/DyVArticulation.h
++++ b/physx/source/lowleveldynamics/include/DyVArticulation.h
+@@ -371,11 +371,13 @@ namespace physx
+ 
+ 			virtual			void					initializeCommonData() {}
+ 
+-			virtual			void					getGeneralizedGravityForce(const PxVec3& /*gravity*/, PxArticulationCache& /*cache*/) {}
++			virtual			void					getGeneralizedGravityForce(const PxVec3& /*gravity*/, PxArticulationCache& /*cache*/, bool /*forceRNEA*/) {}
+ 
+-			virtual			void					getCoriolisAndCentrifugalForce(PxArticulationCache& /*cache*/) {}
++			virtual			void					getCoriolisAndCentrifugalForce(PxArticulationCache& /*cache*/, bool /*forceRNEA*/) {}
+ 
+-			virtual			void					getGeneralizedExternalForce(PxArticulationCache& /*cache*/) {}
++			virtual			void					getGeneralizedExternalForce(PxArticulationCache& /*cache*/, bool /*forceRNEA*/) {}
++
++			virtual			void					getGeneralizedBiasForce(const PxVec3& /*gravity*/, PxArticulationCache& /*cache*/, bool /*forceRNEA*/) {}
+ 
+ 			virtual			void					getJointAcceleration(const PxVec3& /*gravity*/, PxArticulationCache& /*cache*/){}
+ 
+@@ -392,7 +394,7 @@ namespace physx
+ 																const PxVec3& /*gravity*/, const PxU32 /*maxIter*/) { return false;  }
+ 
+ 			virtual			void					getGeneralizedMassMatrix(PxArticulationCache& /*cache*/){}
+-			virtual			void					getGeneralizedMassMatrixCRB(PxArticulationCache& /*cache*/){}
++			virtual			void					getGeneralizedMassMatrixCRB(PxArticulationCache& /*cache*/, bool /*makeDense*/){}
+ 
+ 			virtual			void					teleportRootLink(){}
+ 
+diff --git a/physx/source/lowleveldynamics/src/DyFeatherstoneForwardDynamic.cpp b/physx/source/lowleveldynamics/src/DyFeatherstoneForwardDynamic.cpp
+index 689bbe79..4c3474ea 100644
+--- a/physx/source/lowleveldynamics/src/DyFeatherstoneForwardDynamic.cpp
++++ b/physx/source/lowleveldynamics/src/DyFeatherstoneForwardDynamic.cpp
+@@ -45,7 +45,21 @@
+ #include "PxsIslandSim.h"
+ #include "common/PxProfileZone.h"
+ #include <stdio.h>
++#include <chrono>
+ 
++long g_ABA_Timer = 0;
++
++float  			g_SPD_Dt = 0;
++const float* 	g_SPD_Kd = nullptr;
++const float* 	g_SPD_Fl = nullptr;
++const int*		g_SPD_LinkIdCacheIndexMap = nullptr;
++
++bool g_ApplyABARootForce = false;
++const float* g_ABA_Root_Kd;
++
++int g_nArticulations = 1;
++static int articulationId = 0;
++float g_RootExternalSpatialForce[100][6] = {{0}};
+ 
+ #ifdef _MSC_VER
+ #pragma warning(disable:4505)
+@@ -130,7 +144,7 @@ namespace Dy
+ 	}
+ 
+ 	//compute inertia contribution part
+-	SpatialMatrix FeatherstoneArticulation::computePropagateSpatialInertia(const PxU8 jointType, ArticulationJointCoreData& jointDatum,
++	SpatialMatrix FeatherstoneArticulation::computePropagateSpatialInertia(PxU32 linkId, const PxU8 jointType, ArticulationJointCoreData& jointDatum,
+ 		const SpatialMatrix& articulatedInertia, const Cm::SpatialVectorF* linkIs, InvStIs& invStIs, IsInvD& isInvD, const SpatialSubspaceMatrix& motionMatrix)
+ 	{
+ 		SpatialMatrix spatialInertia;
+@@ -144,7 +158,13 @@ namespace Dy
+ 
+ 			const Cm::SpatialVectorF& Is = linkIs[0];
+ 
+-			const PxReal stIs = sa.innerProduct(Is);
++			PxReal stIs = sa.innerProduct(Is);
++
++			if (g_SPD_LinkIdCacheIndexMap)
++			{
++				float kd = g_SPD_Kd[g_SPD_LinkIdCacheIndexMap[linkId]];
++				stIs += kd * g_SPD_Dt;
++			}
+ 
+ 			const PxReal iStIs = (stIs > /*PX_EPS_REAL*/1e-5f) ? (1.f / stIs) : 0.f;
+ 
+@@ -191,6 +211,15 @@ namespace Dy
+ 				}
+ 			}
+ 
++			if (g_SPD_LinkIdCacheIndexMap)
++			{
++				int cacheIndex = g_SPD_LinkIdCacheIndexMap[linkId];
++				for (PxU32 i = 0; i < jointDatum.dof; ++i)
++				{
++					D[i][i] += g_SPD_Dt * g_SPD_Kd[cacheIndex + i];
++				}
++			}
++
+ 			PxMat33 invD = SpatialMatrix::invertSym33(D);
+ 			for (PxU32 ind = 0; ind < jointDatum.dof; ++ind)
+ 			{
+@@ -296,7 +325,7 @@ namespace Dy
+ 			computeIs(linkDatum, jointDatum, linkID);
+ 
+ 			//(I - Is*Inv(sIs)*sI)
+-			SpatialMatrix spatialInertiaW = computePropagateSpatialInertia(link.inboundJoint->jointType, 
++			SpatialMatrix spatialInertiaW = computePropagateSpatialInertia(linkID, link.inboundJoint->jointType, 
+ 				jointDatum, data.mWorldSpatialArticulatedInertia[linkID], linkDatum.IsW, data.mInvStIs[linkID], data.mIsInvDW[linkID], data.mWorldMotionMatrix[linkID]);
+ 
+ 			//transform spatial inertia into parent space
+@@ -476,7 +505,26 @@ namespace Dy
+ 			//ArticulationLink& baseLink = data.getLink(0);
+ 			//const PxTransform& body2World = baseLink.bodyCore->body2World;
+ 
+-			motionAccelerations[0] = -(invInertia * spatialZAForces[0]);
++			if (g_ApplyABARootForce){
++				SpatialMatrix baseInertia = data.getWorldSpatialArticulatedInertia(0);
++				for (int i = 0; i < 3; i++) baseInertia.topRight(i, i) += g_ABA_Root_Kd[i] * g_SPD_Dt;
++				for (int i = 0; i < 3; i++) baseInertia.bottomLeft(i, i) += g_ABA_Root_Kd[i + 3] * g_SPD_Dt;
++
++				Cm::SpatialVectorF rhs;
++				for (int i = 0; i < 6; i++) rhs[i] = g_RootExternalSpatialForce[articulationId][i] - spatialZAForces[0][i];
++
++				motionAccelerations[0] = baseInertia.invertInertia() * rhs;
++			}
++			else {
++				SpatialMatrix invInertia = data.mBaseInvSpatialArticulatedInertiaW;
++				for (int i = 0; i < 6; i++) {
++						spatialZAForces[0][i] -= g_RootExternalSpatialForce[articulationId][i];
++				}
++				motionAccelerations[0] = -(invInertia * spatialZAForces[0]);
++			}
++
++			articulationId = (articulationId + 1) % g_nArticulations;
++
+ 			Cm::SpatialVectorF deltaV = motionAccelerations[0] * dt;
+ 
+ 			//Cm::SpatialVectorF oldMotionVel = motionVelocities[0];
+@@ -745,87 +793,6 @@ namespace Dy
+ 		articulation->computeUnconstrainedVelocitiesInternal(gravity, Z, DeltaV);
+ 	}
+ 
+-	//void FeatherstoneArticulation::computeCounteractJointForce(const ArticulationSolverDesc& desc, ScratchData& /*scratchData*/, const PxVec3& gravity)
+-	//{
+-	//	const bool fixBase = mArticulationData.getCore()->flags & PxArticulationFlag::eFIX_BASE;
+-
+-	//	const PxU32 linkCount = mArticulationData.getLinkCount();
+-	//	const PxU32 totalDofs = mArticulationData.getDofs();
+-	//	//common data
+-	//	computeRelativeTransform(mArticulationData);
+-
+-	//	jcalc(mArticulationData);
+-
+-	//	computeSpatialInertia(mArticulationData);
+-
+-	//	DyScratchAllocator allocator(desc.scratchMemory, desc.scratchMemorySize);
+-
+-	//	ScratchData tempScratchData;
+-	//	allocateScratchSpatialData(allocator, linkCount, tempScratchData);
+-
+-	//	//PxReal* gravityJointForce = allocator.alloc<PxReal>(totalDofs);
+-	//	//{
+-	//	//	PxMemZero(gravityJointForce, sizeof(PxReal) * totalDofs);
+-
+-	//	//	//compute joint force due to gravity
+-	//	//	tempScratchData.jointVelocities = NULL;
+-	//	//	tempScratchData.jointAccelerations = NULL;
+-	//	//	tempScratchData.jointForces = gravityJointForce;
+-	//	//	tempScratchData.externalAccels = NULL;
+-
+-	//	//	if (fixBase)
+-	//	//		inverseDynamic(mArticulationData, gravity,tempScratchData);
+-	//	//	else
+-	//	//		inverseDynamicFloatingLink(mArticulationData, gravity, tempScratchData);
+-	//	//}
+-
+-	//	////PxReal* jointForce = mArticulationData.getJointForces();
+-	//	//PxReal* tempJointForce = mArticulationData.getTempJointForces();
+-	//	//{
+-	//	//	PxMemZero(tempJointForce, sizeof(PxReal) * totalDofs);
+-
+-	//	//	//compute joint force due to coriolis force
+-	//	//	tempScratchData.jointVelocities = mArticulationData.getJointVelocities();
+-	//	//	tempScratchData.jointAccelerations = NULL;
+-	//	//	tempScratchData.jointForces = tempJointForce;
+-	//	//	tempScratchData.externalAccels = NULL;
+-
+-	//	//	if (fixBase)
+-	//	//		inverseDynamic(mArticulationData, PxVec3(0.f), tempScratchData);
+-	//	//	else
+-	//	//		inverseDynamicFloatingLink(mArticulationData, PxVec3(0.f), tempScratchData);
+-	//	//}
+-
+-	//	//PxReal* jointForce = mArticulationData.getJointForces();
+-	//	//for (PxU32 i = 0; i < mArticulationData.getDofs(); ++i)
+-	//	//{
+-	//	//	jointForce[i] = tempJointForce[i] - gravityJointForce[i];
+-	//	//}
+-
+-	//	//PxReal* jointForce = mArticulationData.getJointForces();
+-	//	PxReal* tempJointForce = mArticulationData.getTempJointForces();
+-	//	{
+-	//		PxMemZero(tempJointForce, sizeof(PxReal) * totalDofs);
+-
+-	//		//compute joint force due to coriolis force
+-	//		tempScratchData.jointVelocities = mArticulationData.getJointVelocities();
+-	//		tempScratchData.jointAccelerations = NULL;
+-	//		tempScratchData.jointForces = tempJointForce;
+-	//		tempScratchData.externalAccels = mArticulationData.getExternalAccelerations();
+-
+-	//		if (fixBase)
+-	//			inverseDynamic(mArticulationData, gravity, tempScratchData);
+-	//		else
+-	//			inverseDynamicFloatingLink(mArticulationData, gravity, tempScratchData);
+-	//	}
+-
+-	//	PxReal* jointForce = mArticulationData.getJointForces();
+-	//	for (PxU32 i = 0; i < mArticulationData.getDofs(); ++i)
+-	//	{
+-	//		jointForce[i] = tempJointForce[i];
+-	//	}
+-	//}
+-
+ 	void FeatherstoneArticulation::updateArticulation(ScratchData& scratchData,
+ 		const PxVec3& gravity, Cm::SpatialVectorF* Z, Cm::SpatialVectorF* DeltaV)
+ 	{
+@@ -865,8 +832,11 @@ namespace Dy
+ 		scratchData.jointForces = mArticulationData.getJointForces();
+ 		scratchData.externalAccels = mArticulationData.getExternalAccelerations();
+ 
++		auto startTime = std::chrono::high_resolution_clock::now();
+ 		updateArticulation(scratchData, gravity, Z, DeltaV);
+-
++		auto endTime = std::chrono::high_resolution_clock::now();
++		auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
++		g_ABA_Timer += duration;
+ 		
+ 		if (mArticulationData.mLinkCount > 1)
+ 		{
+diff --git a/physx/source/lowleveldynamics/src/DyFeatherstoneInverseDynamic.cpp b/physx/source/lowleveldynamics/src/DyFeatherstoneInverseDynamic.cpp
+index a3473041..59bfddb8 100644
+--- a/physx/source/lowleveldynamics/src/DyFeatherstoneInverseDynamic.cpp
++++ b/physx/source/lowleveldynamics/src/DyFeatherstoneInverseDynamic.cpp
+@@ -48,6 +48,9 @@
+ #include "DyConstraintPrep.h"
+ #include "DySolverContext.h"
+ 
++const float* g_InvD_Root_Kd;
++float g_InvD_Dt;
++
+ namespace physx
+ {
+ 
+@@ -205,6 +208,15 @@ namespace Dy
+ 		Cm::SpatialVectorF* zaForce = scratchData.spatialZAVectors;
+ 		PxReal* jointForces = scratchData.jointForces;
+ 
++		if (g_InvD_Root_Kd) {
++			for (int i = 0; i < 3; i++) {
++				compositeSpatialInertia[0].topRight(i, i) += g_InvD_Root_Kd[i] * g_InvD_Dt;
++			}
++			for (int i = 0; i < 3; i++) {
++				compositeSpatialInertia[0].bottomLeft(i, i) += g_InvD_Root_Kd[i + 3] * g_InvD_Dt;
++			}
++		}
++
+ 		Dy::SpatialMatrix invInertia = compositeSpatialInertia[0].invertInertia();
+ 		motionAccelerations[0] = -(invInertia * zaForce[0]);
+ 
+@@ -251,6 +263,13 @@ namespace Dy
+ 
+ 		//pass 2
+ 		computeGeneralizedForceInv(data, scratchData);
++
++		auto p0c = scratchData.spatialZAVectors[0];
++		auto jForce = scratchData.jointForces;
++		for (PxU32 i = 0; i < 6; i++)
++		{
++			jForce[data.getDofs() + i] = p0c[i];
++		}
+ 	}
+ 
+ 	void FeatherstoneArticulation::inverseDynamicFloatingBase(ArticulationData& data, const PxVec3& gravity,
+@@ -276,6 +295,13 @@ namespace Dy
+ 
+ 		//pass 3
+ 		computeRelativeGeneralizedForceInv(data, scratchData);
++
++		auto p0c = scratchData.spatialZAVectors[0];
++		auto jForce = scratchData.jointForces;
++		for (PxU32 i = 0; i < 6; i++)
++		{
++			jForce[data.getDofs() + i] = p0c[i];
++		}
+ 	}
+ 
+ 
+@@ -412,7 +438,7 @@ namespace Dy
+ 		mArticulationData.setDataDirty(false);
+ 	}
+ 
+-	void FeatherstoneArticulation::getGeneralizedGravityForce(const PxVec3& gravity, PxArticulationCache& cache)
++	void FeatherstoneArticulation::getGeneralizedGravityForce(const PxVec3& gravity, PxArticulationCache& cache, bool forceRNEA)
+ 	{
+ 
+ 		if (mArticulationData.getDataDirty())
+@@ -488,7 +514,8 @@ namespace Dy
+ 			scratchData.jointForces = cache.jointForce;
+ 			scratchData.externalAccels = NULL;
+ 
+-			inverseDynamicFloatingBase(mArticulationData, tGravity, scratchData, false);
++			if (forceRNEA) inverseDynamic(mArticulationData, gravity, scratchData, false);
++			else inverseDynamicFloatingBase(mArticulationData, gravity, scratchData, false);
+ 
+ 			allocator->free(tempMemory);
+ 		}
+@@ -508,7 +535,7 @@ namespace Dy
+ 	}
+ 
+ 	//gravity, acceleration and external force(external acceleration) are zero
+-	void  FeatherstoneArticulation::getCoriolisAndCentrifugalForce(PxArticulationCache& cache)
++	void  FeatherstoneArticulation::getCoriolisAndCentrifugalForce(PxArticulationCache& cache, bool forceRNEA)
+ 	{
+ 		if (mArticulationData.getDataDirty())
+ 		{
+@@ -529,7 +556,7 @@ namespace Dy
+ 		scratchData.externalAccels = NULL;
+ 		
+ 		const bool fixBase = mArticulationData.getArticulationFlags() & PxArticulationFlag::eFIX_BASE;
+-		if (fixBase)
++		if (fixBase || forceRNEA)
+ 			inverseDynamic(mArticulationData, PxVec3(0.f), scratchData, true);
+ 		else
+ 			inverseDynamicFloatingBase(mArticulationData, PxVec3(0.f), scratchData, true);
+@@ -538,7 +565,7 @@ namespace Dy
+ 	}
+ 
+ 	//gravity, joint acceleration and joint velocity are zero
+-	void  FeatherstoneArticulation::getGeneralizedExternalForce(PxArticulationCache& cache)
++	void  FeatherstoneArticulation::getGeneralizedExternalForce(PxArticulationCache& cache, bool forceRNEA)
+ 	{
+ 		if (mArticulationData.getDataDirty())
+ 		{
+@@ -579,7 +606,7 @@ namespace Dy
+ 		scratchData.externalAccels = accels;
+ 
+ 		const bool fixBase = mArticulationData.getArticulationFlags() & PxArticulationFlag::eFIX_BASE;
+-		if (fixBase)
++		if (fixBase || forceRNEA)
+ 			inverseDynamic(mArticulationData, PxVec3(0.f), scratchData, false);
+ 		else
+ 			inverseDynamicFloatingBase(mArticulationData, PxVec3(0.f), scratchData, false);
+@@ -588,6 +615,60 @@ namespace Dy
+ 		allocator->free(accels);
+ 	}
+ 
++	// taking into account all of gravity, coriolis, external
++	void  FeatherstoneArticulation::getGeneralizedBiasForce(const PxVec3& gravity, PxArticulationCache& cache, bool forceRNEA)
++	{
++		if (mArticulationData.getDataDirty())
++		{
++			Ps::getFoundation().error(PxErrorCode::eINVALID_OPERATION, __FILE__, __LINE__, "Articulation::getCoriolisAndCentrifugalForce() commonInit need to be called first to initialize data!");
++			return;
++		}
++
++		const PxU32 linkCount = mArticulationData.getLinkCount();
++
++		PxcScratchAllocator* allocator = reinterpret_cast<PxcScratchAllocator*>(cache.scratchAllocator);
++
++		ScratchData scratchData;
++		PxU8* tempMemory = allocateScratchSpatialData(allocator, linkCount, scratchData);
++
++		scratchData.jointVelocities = cache.jointVelocity;
++		scratchData.jointAccelerations = NULL;
++		scratchData.jointForces = cache.jointForce;
++		
++		Cm::SpatialVector* accels = reinterpret_cast<Cm::SpatialVector*>(allocator->alloc(sizeof(Cm::SpatialVector) * linkCount));
++
++		//turn external forces to external accels
++		for (PxU32 i = 0; i < linkCount; ++i)
++		{
++			ArticulationLink& link = mArticulationData.getLink(i);
++			PxsBodyCore& core = *link.bodyCore;
++			
++			const PxSpatialForce& force = cache.externalForces[i];
++			Cm::SpatialVector& accel = accels[i];
++
++			accel.linear = force.force * core.inverseMass;
++
++			PxMat33 inverseInertiaWorldSpace;
++			Cm::transformInertiaTensor(core.inverseInertia, PxMat33(core.body2World.q), inverseInertiaWorldSpace);
++
++			accel.angular = inverseInertiaWorldSpace * force.torque;
++		}
++		
++		scratchData.externalAccels = accels;
++		const PxVec3 tGravity = gravity;
++
++		const bool fixBase = mArticulationData.getArticulationFlags() & PxArticulationFlag::eFIX_BASE;
++		if (fixBase || forceRNEA) {
++			inverseDynamic(mArticulationData, tGravity, scratchData, true);
++		}
++		else {
++			inverseDynamicFloatingBase(mArticulationData, tGravity, scratchData, true);
++		}
++
++		allocator->free(tempMemory);
++		allocator->free(accels);
++	}
++
+ 	//provided joint acceleration, calculate joint force
+ 	void FeatherstoneArticulation::getJointForce(PxArticulationCache& cache)
+ 	{
+@@ -1757,11 +1838,11 @@ namespace Dy
+ 		//Hii
+ 		for (PxU32 ind = 0; ind < jointDatum.dof; ++ind)
+ 		{
+-			const PxU32 row = (jointDatum.jointOffset + ind)* totalDofs;
++			const PxU32 row = (jointDatum.jointOffset + ind + 6) * (totalDofs + 6);
+ 			const Cm::SpatialVectorF& tf = f[ind];
+ 			for (PxU32 ind2 = 0; ind2 < jointDatum.dof; ++ind2)
+ 			{
+-				const PxU32 col = jointDatum.jointOffset + ind2;
++				const PxU32 col = jointDatum.jointOffset + ind2 + 6;
+ 				const Cm::UnAlignedSpatialVector& sa = data.getWorldMotionMatrix(linkID)[ind2];
+ 				massMatrix[row + col] = sa.innerProduct(tf);
+ 			}
+@@ -1788,11 +1869,11 @@ namespace Dy
+ 			for (PxU32 ind = 0; ind < pJointDatum.dof; ++ind)
+ 			{
+ 				const Cm::UnAlignedSpatialVector& sa = data.getWorldMotionMatrix(j)[ind];
+-				const PxU32 col = pJointDatum.jointOffset + ind;
++				const PxU32 col = pJointDatum.jointOffset + ind + 6;
+ 
+ 				for (PxU32 ind2 = 0; ind2 < jointDatum.dof; ++ind2)
+ 				{
+-					const PxU32 row = (jointDatum.jointOffset + ind2)* totalDofs;
++					const PxU32 row = (jointDatum.jointOffset + ind2 + 6) * (totalDofs + 6);
+ 
+ 					Cm::SpatialVectorF& fcol = f[ind2];
+ 
+@@ -1804,13 +1885,13 @@ namespace Dy
+ 			{
+ 				for (PxU32 ind = 0; ind < pJointDatum.dof; ++ind)
+ 				{
+-					const PxU32 pRow = (pJointDatum.jointOffset + ind)* totalDofs;
+-					const PxU32 col = pJointDatum.jointOffset + ind;
++					const PxU32 pRow = (pJointDatum.jointOffset + ind + 6) * (totalDofs + 6);
++					const PxU32 col = pJointDatum.jointOffset + ind + 6;
+ 
+ 					for (PxU32 ind2 = 0; ind2 < jointDatum.dof; ++ind2)
+ 					{
+-						const PxU32 pCol = jointDatum.jointOffset + ind2;
+-						const PxU32 row = (jointDatum.jointOffset + ind2) * totalDofs;
++						const PxU32 pCol = jointDatum.jointOffset + ind2 + 6;
++						const PxU32 row = (jointDatum.jointOffset + ind2 + 6) * (totalDofs + 6);
+ 
+ 						massMatrix[pRow + pCol] = massMatrix[row + col];
+ 					}
+@@ -1827,7 +1908,7 @@ namespace Dy
+ 
+ 		PxReal* massMatrix = cache.massMatrix;
+ 
+-		PxMemZero(massMatrix, sizeof(PxReal) * elementCount * elementCount);
++		PxMemZero(massMatrix, sizeof(PxReal) * (elementCount + 6) * (elementCount + 6));
+ 
+ 		const PxU32 linkCount = mArticulationData.getLinkCount();
+ 
+@@ -1874,13 +1955,13 @@ namespace Dy
+ 	}
+ 
+ 
+-	void FeatherstoneArticulation::calculateHFloatingBase(PxArticulationCache& cache)
++	void FeatherstoneArticulation::calculateHFloatingBase(PxArticulationCache& cache, bool makeDense)
+ 	{
+ 		const PxU32 elementCount = mArticulationData.getDofs();
+ 
+ 		PxReal* massMatrix = cache.massMatrix;
+ 
+-		PxMemZero(massMatrix, sizeof(PxReal) * elementCount * elementCount);
++		PxMemZero(massMatrix, sizeof(PxReal) * (6 + elementCount) * (6 + elementCount));
+ 
+ 		const PxU32 linkCount = mArticulationData.getLinkCount();
+ 
+@@ -1934,20 +2015,79 @@ namespace Dy
+ 			}
+ 		}
+ 
+-		//Ib = base link composite inertia tensor
+-		//compute transpose(F) * inv(Ib) *F
+-		Dy::SpatialMatrix invI0 = compositeSpatialInertia[0].invertInertia();
++		auto bottomRight = compositeSpatialInertia[0].getBottomRight();
+ 
+-		//H - transpose(F) * inv(Ib) * F;
+-		for (PxU32 row = 0; row < elementCount; ++row)
++		for (PxU32 row = 0; row < 3; ++row)
+ 		{
+-			const Cm::SpatialVectorF& f = F[row];
+-			for (PxU32 col = 0; col < elementCount; ++col)
++			for (PxU32 col = 0; col < 3; ++col)
+ 			{
+-				const Cm::SpatialVectorF invIf = invI0 * F[col];
+-				const PxReal v = f.innerProduct(invIf);
+-				const PxU32 index = row * elementCount + col;
+-				massMatrix[index] = massMatrix[index] - v;
++				const PxU32 index = row * (elementCount + 6) + col;
++				massMatrix[index] = compositeSpatialInertia[0].topRight(row, col);
++			}
++		}
++
++		for (PxU32 row = 0; row < 3; ++row)
++		{
++			for (PxU32 col = 3; col < 6; ++col)
++			{
++				const PxU32 index = row * (elementCount + 6) + col;
++				massMatrix[index] = compositeSpatialInertia[0].topLeft(row, col - 3);
++			}
++		}
++
++		for (PxU32 row = 3; row < 6; ++row)
++		{
++			for (PxU32 col = 0; col < 3; ++col)
++			{
++				const PxU32 index = row * (elementCount + 6) + col;
++				massMatrix[index] = bottomRight(row - 3, col);
++			}
++		}
++
++		for (PxU32 row = 3; row < 6; ++row)
++		{
++			for (PxU32 col = 3; col < 6; ++col)
++			{
++				const PxU32 index = row * (elementCount + 6) + col;
++				massMatrix[index] = compositeSpatialInertia[0].bottomLeft(row - 3, col - 3);
++			}
++		}
++
++		for (PxU32 x = 6; x < elementCount + 6; ++x)
++		{
++			for (PxU32 y = 0; y < 6; ++y)
++			{
++				const PxU32 index1 = x * (elementCount + 6) + y;
++				const PxU32 index2 = y * (elementCount + 6) + x;
++				massMatrix[index1] = massMatrix[index2] = F[x - 6][y];
++			}
++		}
++
++		if (makeDense)
++		{
++			//Ib = base link composite inertia tensor
++			//compute transpose(F) * inv(Ib) *F
++			if (g_InvD_Root_Kd) {
++				for (int i = 0; i < 3; i++) {
++					compositeSpatialInertia[0].topRight(i, i) += g_InvD_Root_Kd[i] * g_InvD_Dt;
++				}
++				for (int i = 0; i < 3; i++) {
++					compositeSpatialInertia[0].bottomLeft(i, i) += g_InvD_Root_Kd[i + 3] * g_InvD_Dt;
++				}
++			}
++			Dy::SpatialMatrix invI0 = compositeSpatialInertia[0].invertInertia();
++
++			//H - transpose(F) * inv(Ib) * F;
++			for (PxU32 row = 0; row < elementCount; ++row)
++			{
++				const Cm::SpatialVectorF& f = F[row];
++				for (PxU32 col = 0; col < elementCount; ++col)
++				{
++					const Cm::SpatialVectorF invIf = invI0 * F[col];
++					const PxReal v = f.innerProduct(invIf);
++					const PxU32 index = (row + 6) * (elementCount + 6) + col + 6;
++					massMatrix[index] = massMatrix[index] - v;
++				}
+ 			}
+ 		}
+ 
+@@ -1997,7 +2137,7 @@ namespace Dy
+ 
+ 	}
+ 
+-	void FeatherstoneArticulation::getGeneralizedMassMatrixCRB(PxArticulationCache& cache)
++	void FeatherstoneArticulation::getGeneralizedMassMatrixCRB(PxArticulationCache& cache, bool makeDense)
+ 	{
+ 		if (mArticulationData.getDataDirty())
+ 		{
+@@ -2012,7 +2152,7 @@ namespace Dy
+ 		}
+ 		else
+ 		{
+-			calculateHFloatingBase(cache);
++			calculateHFloatingBase(cache, makeDense);
+ 		}
+ 
+ 	}
+diff --git a/physx/source/physx/src/NpArticulationReducedCoordinate.cpp b/physx/source/physx/src/NpArticulationReducedCoordinate.cpp
+index 67e6a023..3d40d9f0 100644
+--- a/physx/source/physx/src/NpArticulationReducedCoordinate.cpp
++++ b/physx/source/physx/src/NpArticulationReducedCoordinate.cpp
+@@ -217,34 +217,44 @@ void NpArticulationReducedCoordinate::commonInit() const
+ 	mImpl.mArticulation.getScArticulation().commonInit();
+ }
+ 
+-void NpArticulationReducedCoordinate::computeGeneralizedGravityForce(PxArticulationCache& cache) const
++void NpArticulationReducedCoordinate::computeGeneralizedGravityForce(PxArticulationCache& cache, bool forceRNEA) const
+ {
+ 	PX_CHECK_AND_RETURN(mImpl.getAPIScene(), "PxArticulation::computeGeneralisedGravityForce: object must be in a scene");
+ 	NP_READ_CHECK(mImpl.getOwnerScene());
+ 
+ 	PX_CHECK_AND_RETURN(cache.version == mImpl.mCacheVersion, "PxArticulation::computeGeneralisedGravityForce : cache is invalid, articulation configuration has changed! ");
+ 
+-	mImpl.mArticulation.getScArticulation().computeGeneralizedGravityForce(cache);
++	mImpl.mArticulation.getScArticulation().computeGeneralizedGravityForce(cache, forceRNEA);
+ }
+ 
+-void NpArticulationReducedCoordinate::computeCoriolisAndCentrifugalForce(PxArticulationCache& cache) const
++void NpArticulationReducedCoordinate::computeCoriolisAndCentrifugalForce(PxArticulationCache& cache, bool forceRNEA) const
+ {
+ 	PX_CHECK_AND_RETURN(mImpl.getAPIScene(), "PxArticulation::computeCoriolisAndCentrifugalForce: object must be in a scene");
+ 	NP_READ_CHECK(mImpl.getOwnerScene());
+ 
+ 	PX_CHECK_AND_RETURN(cache.version == mImpl.mCacheVersion, "PxArticulation::computeCoriolisAndCentrifugalForce : cache is invalid, articulation configuration has changed! ");
+ 
+-	mImpl.mArticulation.getScArticulation().computeCoriolisAndCentrifugalForce(cache);
++	mImpl.mArticulation.getScArticulation().computeCoriolisAndCentrifugalForce(cache, forceRNEA);
+ }
+ 
+-void NpArticulationReducedCoordinate::computeGeneralizedExternalForce(PxArticulationCache& cache) const
++void NpArticulationReducedCoordinate::computeGeneralizedExternalForce(PxArticulationCache& cache, bool forceRNEA) const
+ {
+ 	PX_CHECK_AND_RETURN(mImpl.getAPIScene(), "PxArticulation::computeGeneralizedExternalForce: object must be in a scene");
+ 	NP_READ_CHECK(mImpl.getOwnerScene());
+ 
+ 	PX_CHECK_AND_RETURN(cache.version == mImpl.mCacheVersion, "PxArticulation::computeGeneralizedExternalForce : cache is invalid, articulation configuration has changed! ");
+ 
+-	mImpl.mArticulation.getScArticulation().computeGeneralizedExternalForce(cache);
++	mImpl.mArticulation.getScArticulation().computeGeneralizedExternalForce(cache, forceRNEA);
++}
++
++void NpArticulationReducedCoordinate::computeGeneralizedBiasForce(PxArticulationCache& cache, bool forceRNEA) const
++{
++	PX_CHECK_AND_RETURN(mImpl.getAPIScene(), "PxArticulation::computeGeneralizedBiasForce: object must be in a scene");
++	NP_READ_CHECK(mImpl.getOwnerScene());
++
++	PX_CHECK_AND_RETURN(cache.version == mImpl.mCacheVersion, "PxArticulation::computeGeneralizedBiasForce : cache is invalid, articulation configuration has changed! ");
++
++	mImpl.mArticulation.getScArticulation().computeGeneralizedBiasForce(cache, forceRNEA);
+ }
+ 
+ void NpArticulationReducedCoordinate::computeJointAcceleration(PxArticulationCache& cache) const
+@@ -312,14 +322,14 @@ bool NpArticulationReducedCoordinate::computeLambda(PxArticulationCache& cache,
+ 	return mImpl.mArticulation.getScArticulation().computeLambda(cache, initialState, jointTorque, getScene()->getGravity(), maxIter);
+ }
+ 
+-void NpArticulationReducedCoordinate::computeGeneralizedMassMatrix(PxArticulationCache& cache) const
++void NpArticulationReducedCoordinate::computeGeneralizedMassMatrix(PxArticulationCache& cache, bool makeDense) const
+ {
+ 	PX_CHECK_AND_RETURN(mImpl.getAPIScene(), "PxArticulation::computeGeneralizedMassMatrix: object must be in a scene");
+ 	NP_READ_CHECK(mImpl.getOwnerScene());
+ 
+ 	PX_CHECK_AND_RETURN(cache.version == mImpl.mCacheVersion, "PxArticulation::computeGeneralizedMassMatrix : cache is invalid, articulation configuration has changed! ");
+ 
+-	mImpl.mArticulation.getScArticulation().computeGeneralizedMassMatrix(cache);
++	mImpl.mArticulation.getScArticulation().computeGeneralizedMassMatrix(cache, makeDense);
+ }
+ 
+ void NpArticulationReducedCoordinate::addLoopJoint(PxJoint* joint)
+diff --git a/physx/source/physx/src/NpArticulationReducedCoordinate.h b/physx/source/physx/src/NpArticulationReducedCoordinate.h
+index 89dd1bb6..6bf601ec 100644
+--- a/physx/source/physx/src/NpArticulationReducedCoordinate.h
++++ b/physx/source/physx/src/NpArticulationReducedCoordinate.h
+@@ -107,11 +107,13 @@ namespace physx
+ 
+ 		virtual		void						commonInit() const;
+ 
+-		virtual		void						computeGeneralizedGravityForce(PxArticulationCache& cache) const;
++		virtual		void						computeGeneralizedGravityForce(PxArticulationCache& cache, bool forceRNEA) const;
+ 
+-		virtual		void						computeCoriolisAndCentrifugalForce(PxArticulationCache& cache) const;
++		virtual		void						computeCoriolisAndCentrifugalForce(PxArticulationCache& cache, bool forceRNEA) const;
+ 
+-		virtual		void						computeGeneralizedExternalForce(PxArticulationCache& cache) const;
++		virtual		void						computeGeneralizedExternalForce(PxArticulationCache& cache, bool forceRNEA) const;
++
++		virtual		void						computeGeneralizedBiasForce(PxArticulationCache& cache, bool forceRNEA) const;
+ 
+ 		virtual		void						computeJointAcceleration(PxArticulationCache& cache) const;
+ 		
+@@ -124,7 +126,7 @@ namespace physx
+ 
+ 		virtual		bool						computeLambda(PxArticulationCache& cache, PxArticulationCache& rollBackCache, const PxReal* const jointTorque, const PxU32 maxIter) const;
+ 
+-		virtual		void						computeGeneralizedMassMatrix(PxArticulationCache& cache) const;
++		virtual		void						computeGeneralizedMassMatrix(PxArticulationCache& cache, bool makeDense) const;
+ 
+ 		virtual		void						addLoopJoint(PxJoint* joint);
+ 
+diff --git a/physx/source/simulationcontroller/include/ScArticulationCore.h b/physx/source/simulationcontroller/include/ScArticulationCore.h
+index 884dd1d1..8dda994d 100644
+--- a/physx/source/simulationcontroller/include/ScArticulationCore.h
++++ b/physx/source/simulationcontroller/include/ScArticulationCore.h
+@@ -162,11 +162,13 @@ namespace Sc
+ 
+ 						void						commonInit() const;
+ 
+-						void						computeGeneralizedGravityForce(PxArticulationCache& cache) const;
++						void						computeGeneralizedGravityForce(PxArticulationCache& cache, bool forceRNEA) const;
+ 
+-						void						computeCoriolisAndCentrifugalForce(PxArticulationCache& cache) const;
++						void						computeCoriolisAndCentrifugalForce(PxArticulationCache& cache, bool forceRNEA) const;
+ 
+-						void						computeGeneralizedExternalForce(PxArticulationCache& cache) const;
++						void						computeGeneralizedExternalForce(PxArticulationCache& cache, bool forceRNEA) const;
++
++						void						computeGeneralizedBiasForce(PxArticulationCache& cache, bool forceRNEA) const;
+ 
+ 						void						computeJointAcceleration(PxArticulationCache& cache) const;
+ 
+@@ -179,7 +181,7 @@ namespace Sc
+ 
+ 						bool						computeLambda(PxArticulationCache& cache, PxArticulationCache& rollBackCache, const PxReal* const jointTorque, const PxVec3 gravity, const PxU32 maxIter) const;
+ 
+-						void						computeGeneralizedMassMatrix(PxArticulationCache& cache) const;
++						void						computeGeneralizedMassMatrix(PxArticulationCache& cache, bool makeDense) const;
+ 
+ 						PxU32						getCoefficientMatrixSize() const;
+ 
+diff --git a/physx/source/simulationcontroller/src/ScArticulationCore.cpp b/physx/source/simulationcontroller/src/ScArticulationCore.cpp
+index 4cd0e9c6..599b78e6 100644
+--- a/physx/source/simulationcontroller/src/ScArticulationCore.cpp
++++ b/physx/source/simulationcontroller/src/ScArticulationCore.cpp
+@@ -219,22 +219,28 @@ void Sc::ArticulationCore::commonInit() const
+ 		mSim->commonInit();
+ }
+ 
+-void Sc::ArticulationCore::computeGeneralizedGravityForce(PxArticulationCache& cache) const
++void Sc::ArticulationCore::computeGeneralizedGravityForce(PxArticulationCache& cache, bool forceRNEA) const
+ {
+ 	if(mSim)
+-		mSim->computeGeneralizedGravityForce(cache);
++		mSim->computeGeneralizedGravityForce(cache, forceRNEA);
+ }
+ 
+-void Sc::ArticulationCore::computeCoriolisAndCentrifugalForce(PxArticulationCache& cache) const
++void Sc::ArticulationCore::computeCoriolisAndCentrifugalForce(PxArticulationCache& cache, bool forceRNEA) const
+ {
+ 	if(mSim)
+-		mSim->computeCoriolisAndCentrifugalForce(cache);
++		mSim->computeCoriolisAndCentrifugalForce(cache, forceRNEA);
+ }
+ 
+-void Sc::ArticulationCore::computeGeneralizedExternalForce(PxArticulationCache& cache) const
++void Sc::ArticulationCore::computeGeneralizedExternalForce(PxArticulationCache& cache, bool forceRNEA) const
+ {
+ 	if(mSim)
+-		mSim->computeGeneralizedExternalForce(cache);
++		mSim->computeGeneralizedExternalForce(cache, forceRNEA);
++}
++
++void Sc::ArticulationCore::computeGeneralizedBiasForce(PxArticulationCache& cache, bool forceRNEA) const
++{
++	if(mSim)
++		mSim->computeGeneralizedBiasForce(cache, forceRNEA);
+ }
+ 
+ void Sc::ArticulationCore::computeJointAcceleration(PxArticulationCache& cache) const
+@@ -266,10 +272,10 @@ bool Sc::ArticulationCore::computeLambda(PxArticulationCache& cache, PxArticulat
+ 	return mSim ? mSim->computeLambda(cache, initialState, jointTorque, gravity, maxIter) : false;
+ }
+ 
+-void Sc::ArticulationCore::computeGeneralizedMassMatrix(PxArticulationCache& cache) const
++void Sc::ArticulationCore::computeGeneralizedMassMatrix(PxArticulationCache& cache, bool makeDense) const
+ {
+ 	if(mSim)
+-		mSim->computeGeneralizedMassMatrix(cache);
++		mSim->computeGeneralizedMassMatrix(cache, makeDense);
+ }
+ 
+ PxU32 Sc::ArticulationCore::getCoefficientMatrixSize() const
+diff --git a/physx/source/simulationcontroller/src/ScArticulationSim.cpp b/physx/source/simulationcontroller/src/ScArticulationSim.cpp
+index 06281329..2c6e0a41 100644
+--- a/physx/source/simulationcontroller/src/ScArticulationSim.cpp
++++ b/physx/source/simulationcontroller/src/ScArticulationSim.cpp
+@@ -539,7 +539,7 @@ PxArticulationCache* Sc::ArticulationSim::createCache() const
+ 
+ 	cache->massMatrix = reinterpret_cast<PxReal*>(tCache + offset);
+ 
+-	offset += sizeof(PxReal) *totalDofs * totalDofs;
++	offset += sizeof(PxReal) *(6 + totalDofs) * (6 + totalDofs);
+ 	cache->jointVelocity = reinterpret_cast<PxReal*>(tCache + offset);
+ 
+ 	offset += sizeof(PxReal) * totalDofs;
+@@ -551,7 +551,7 @@ PxArticulationCache* Sc::ArticulationSim::createCache() const
+ 	offset += sizeof(PxReal) * totalDofs;
+ 	cache->jointForce = reinterpret_cast<PxReal*>(tCache + offset);
+ 
+-	offset += sizeof(PxReal) * totalDofs;
++	offset += sizeof(PxReal) * (totalDofs + 6);
+ 	cache->linkVelocity = reinterpret_cast<PxSpatialVelocity*>(tCache + offset);
+ 
+ 	offset += sizeof(PxSpatialVelocity) * linkCount;
+@@ -582,8 +582,8 @@ PxU32 Sc::ArticulationSim::getCacheDataSize() const
+ 	PxU32 totalSize =
+ 		sizeof(PxSpatialForce) * linkCount							//external force
+ 		+ sizeof(PxReal) * (6 + totalDofs) * ((1 + jointCount) * 6)		//offset to end of dense jacobian (assuming free floating base)
+-		+ sizeof(PxReal) * totalDofs * totalDofs						//mass matrix
+-		+ sizeof(PxReal) * totalDofs * 4								//jointVelocity, jointAcceleration, jointPosition, joint force
++		+ sizeof(PxReal) * (6 + totalDofs) * (6 + totalDofs)						//mass matrix
++		+ sizeof(PxReal) * (totalDofs * 4 + 6)								//jointVelocity, jointAcceleration, jointPosition, joint force
+ 		+ sizeof(PxSpatialVelocity) * linkCount * 2						//link velocity, link acceleration
+ 		+ sizeof(PxArticulationRootLinkData);							//root link data
+ 	
+@@ -657,19 +657,24 @@ void Sc::ArticulationSim::commonInit()
+ 	mLLArticulation->initializeCommonData();
+ }
+ 
+-void Sc::ArticulationSim::computeGeneralizedGravityForce(PxArticulationCache& cache)
++void Sc::ArticulationSim::computeGeneralizedGravityForce(PxArticulationCache& cache, bool forceRNEA)
++{
++	mLLArticulation->getGeneralizedGravityForce(mScene.getGravityFast(), cache, forceRNEA);
++}
++
++void Sc::ArticulationSim::computeCoriolisAndCentrifugalForce(PxArticulationCache& cache, bool forceRNEA)
+ {
+-	mLLArticulation->getGeneralizedGravityForce(mScene.getGravityFast(), cache);
++	mLLArticulation->getCoriolisAndCentrifugalForce(cache, forceRNEA);
+ }
+ 
+-void Sc::ArticulationSim::computeCoriolisAndCentrifugalForce(PxArticulationCache& cache)
++void Sc::ArticulationSim::computeGeneralizedExternalForce(PxArticulationCache& cache, bool forceRNEA)
+ {
+-	mLLArticulation->getCoriolisAndCentrifugalForce(cache);
++	mLLArticulation->getGeneralizedExternalForce(cache, forceRNEA);
+ }
+ 
+-void Sc::ArticulationSim::computeGeneralizedExternalForce(PxArticulationCache& cache)
++void Sc::ArticulationSim::computeGeneralizedBiasForce(PxArticulationCache& cache, bool forceRNEA)
+ {
+-	mLLArticulation->getGeneralizedExternalForce(cache);
++	mLLArticulation->getGeneralizedBiasForce(mScene.getGravityFast(), cache, forceRNEA);
+ }
+ 
+ void Sc::ArticulationSim::computeJointAcceleration(PxArticulationCache& cache)
+@@ -698,9 +703,9 @@ bool Sc::ArticulationSim::computeLambda(PxArticulationCache& cache, PxArticulati
+ 	return mLLArticulation->getLambda(mLoopConstraints.begin(), mLoopConstraints.size(), cache, initialState, jointTorque, gravity, maxIter);
+ }
+ 
+-void Sc::ArticulationSim::computeGeneralizedMassMatrix(PxArticulationCache& cache)
++void Sc::ArticulationSim::computeGeneralizedMassMatrix(PxArticulationCache& cache, bool makeDense)
+ {
+-	mLLArticulation->getGeneralizedMassMatrixCRB(cache);
++	mLLArticulation->getGeneralizedMassMatrixCRB(cache, makeDense);
+ 
+ 	/*const PxU32 totalDofs = mLLArticulation->getDofs();
+ 
+diff --git a/physx/source/simulationcontroller/src/ScArticulationSim.h b/physx/source/simulationcontroller/src/ScArticulationSim.h
+index 786cd522..15c61d70 100644
+--- a/physx/source/simulationcontroller/src/ScArticulationSim.h
++++ b/physx/source/simulationcontroller/src/ScArticulationSim.h
+@@ -161,11 +161,13 @@ namespace Sc
+ 
+ 					void					commonInit();
+ 
+-					void					computeGeneralizedGravityForce(PxArticulationCache& cache);
++					void					computeGeneralizedGravityForce(PxArticulationCache& cache, bool forceRNEA);
+ 
+-					void					computeCoriolisAndCentrifugalForce(PxArticulationCache& cache);
++					void					computeCoriolisAndCentrifugalForce(PxArticulationCache& cache, bool forceRNEA);
+ 
+-					void					computeGeneralizedExternalForce(PxArticulationCache& cache);
++					void					computeGeneralizedExternalForce(PxArticulationCache& cache, bool forceRNEA);
++
++					void					computeGeneralizedBiasForce(PxArticulationCache& cache, bool forceRNEA);
+ 
+ 					void					computeJointAcceleration(PxArticulationCache& cache);
+ 
+@@ -179,7 +181,7 @@ namespace Sc
+ 
+ 					bool					computeLambda(PxArticulationCache& cache, PxArticulationCache& rollBackCache, const PxReal* jointTorque, const PxVec3 gravity, const PxU32 maxIter);
+ 
+-					void					computeGeneralizedMassMatrix(PxArticulationCache& cache);
++					void					computeGeneralizedMassMatrix(PxArticulationCache& cache, bool makeDense);
+ 
+ 					PxU32					getCoefficientMatrixSize() const;
+ 
+-- 
+2.23.0
+
