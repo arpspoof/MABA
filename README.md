@@ -1,9 +1,12 @@
-# pyPhysX: MABA (SPD) test env
+# SCA2020: Linear Time Stable PD Controllers for Physics-based Character Animation
 
 [project page](https://arpspoof.github.io/project/spd/spd.html), 
 [paper](https://www.cs.sfu.ca/~kkyin/papers/fastSPD.pdf), 
 [demo](https://www.cs.sfu.ca/~kkyin/papers/fastSPD.mp4), 
 [talk](https://www.youtube.com/watch?v=wo7cK-DClhw)
+
+### Introduction
+This is the accompanying code for our SCA2020 paper. To reproduce the reported results, a patch to simulation engine (here we use PhysX) is required. The patch is included in this repository and see below instructions for how to apply it to PhysX simulator. The main part of this repository is a test environment to compare different SPD algorithms. 
 
 ### Test system
 Our tests are performed on Archlinux. CMake is used to build the system. The system should generally work on other linux systems as well. On Windows there are some dependency issues. 
